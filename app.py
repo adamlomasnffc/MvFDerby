@@ -611,7 +611,7 @@ if current_page == "Homepage":
     st.markdown("### Welcome to the Derby Man v Fat League App")
     st.markdown(
         textwrap.dedent("""
-        Man v Fat Football is a weight-loss focused five-a-side league where
+        Man v Fat Football is a weight-loss focused six-a-side league where
         your score isn't just about goals - it's about progress on and off the pitch.
 
         This app tracks player stats across every season of the Derby league:
@@ -619,7 +619,7 @@ if current_page == "Homepage":
         for the current season and across our full league history.
 
         Every three seasons, squads are redrafted. Use **Draft Standings** to see
-        how each side performed across a full draft cycle before the next reshuffle.
+        how each side performs across a full draft cycle before the next reshuffle.
 
         Use the buttons above to explore:
         - **Season Stats** - this season's leaderboard, plus every past season
