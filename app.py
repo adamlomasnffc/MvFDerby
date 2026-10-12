@@ -1,3 +1,7 @@
+import base64
+import textwrap
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -17,11 +21,30 @@ def render_html(html_str):
 # ==========================================
 # 2. PAGE CONFIG & ASSETS
 # ==========================================
-APP_ICON_URL = "https://raw.githubusercontent.com/YOUR_REPO/main/LeagueLogo.png"       # TODO: replace
-HEADER_LOGO_URL = "https://raw.githubusercontent.com/YOUR_REPO/main/LeagueLogo.png"    # TODO: replace
+# Logo file sits in the same folder as app.py in the repository
+LOGO_FILENAME = "6C4E75CF-C4F8-4770-B666-1143DC3BC22D.jpeg"
+LOGO_PATH = Path(__file__).parent / LOGO_FILENAME
+
+
+@st.cache_data
+def load_logo_data_uri():
+    try:
+        encoded = base64.b64encode(LOGO_PATH.read_bytes()).decode()
+        return f"data:image/jpeg;base64,{encoded}"
+    except Exception:
+        return ""
+
+
+HEADER_LOGO_URL = load_logo_data_uri()
+
+try:
+    from PIL import Image
+    PAGE_ICON = Image.open(LOGO_PATH)
+except Exception:
+    PAGE_ICON = "⚽"
 
 st.set_page_config(
-    page_title="Derby MvF League App", page_icon=APP_ICON_URL, layout="wide"
+    page_title="Derby MvF League App", page_icon=PAGE_ICON, layout="wide"
 )
 
 # ==========================================
@@ -43,9 +66,6 @@ current_page = st.session_state["active_page"]
 # ==========================================
 style_html = f"""
 <head>
-<link rel="apple-touch-icon" sizes="180x180" href="{APP_ICON_URL}">
-<link rel="icon" type="image/png" sizes="192x192" href="{APP_ICON_URL}">
-<link rel="shortcut icon" href="{APP_ICON_URL}">
 <meta name="apple-mobile-web-app-title" content="Derby MvF League App">
 <meta name="apple-mobile-web-app-capable" content="yes">
 </head>
@@ -109,7 +129,19 @@ div.stButton > button {{
     align-items: center !important;
     justify-content: center !important;
 }}
+[data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] * {{
+    text-align: center !important;
+}}
+ul, ol {{
+    list-style-position: inside !important;
+    padding-left: 0 !important;
+}}
+li {{
+    text-align: center !important;
+}}
 div.stButton > button p {{
+    white-space: normal !important;
+    line-height: 1.15 !important;
     display: flex !important;
     align-items: center !important;
     justify-content: center !important;
@@ -560,9 +592,14 @@ def nav_button(label, key, column):
         st.rerun()
 
 
-nav_cols = st.columns(len(pages_config))
-for idx, (label, key) in enumerate(pages_config):
-    nav_button(label, key, nav_cols[idx])
+# Row 1: Home, centred on its own
+_, home_col, _ = st.columns(3)
+nav_button(pages_config[0][0], pages_config[0][1], home_col)
+
+# Row 2: the three destination tabs
+other_cols = st.columns(len(pages_config) - 1)
+for idx, (label, key) in enumerate(pages_config[1:]):
+    nav_button(label, key, other_cols[idx])
 
 st.divider()
 
@@ -573,7 +610,7 @@ st.divider()
 if current_page == "Homepage":
     st.markdown("### Welcome to the Derby Man v Fat League App")
     st.markdown(
-        """
+        textwrap.dedent("""
         Man v Fat Football is a weight-loss focused five-a-side league where
         your score isn't just about goals - it's about progress on and off the pitch.
 
@@ -588,7 +625,7 @@ if current_page == "Homepage":
         - **Season Stats** - this season's leaderboard, plus every past season
         - **All Time Stats** - combined totals across the league's whole history
         - **Draft Standings** - team-by-team standings for each 3-season draft cycle
-        """
+        """)
     )
 
 # ==========================================
@@ -625,7 +662,7 @@ elif current_page == "Season Stats":
 
             render_stats_kpis(season_df)
             st.divider()
-            st.markdown(f"### {selected_season} Player Stats")
+            st.markdown(f"### Season {selected_season} Player Stats")
             render_stats_table(season_df, colour_map, key_prefix="season")
 
     except Exception as e:
