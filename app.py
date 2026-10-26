@@ -623,17 +623,19 @@ def find_next_week(df):
     return weeks[-1] if weeks else None
 
 
-def team_chip(name):
+def team_chip(name, dot_on_right=False):
     colour = TEAM_DOT_COLOURS.get(str(name).strip().lower())
     dot = ""
     if colour:
+        margin = "margin-left:5px;" if dot_on_right else "margin-right:5px;"
         dot = (
             f"<span style='display:inline-block; width:10px; height:10px; "
             f"border-radius:50%; background-color:{colour}; "
-            f"border:1px solid rgba(255,255,255,0.5); margin-right:5px; "
+            f"border:1px solid rgba(255,255,255,0.5); {margin} "
             f"vertical-align:middle;'></span>"
         )
-    return f"{dot}{html_lib.escape(str(name))}"
+    label = html_lib.escape(str(name))
+    return f"{label}{dot}" if dot_on_right else f"{dot}{label}"
 
 
 def fixtures_cards_html(df, next_week):
@@ -672,7 +674,7 @@ def fixtures_cards_html(df, next_week):
                 f"<div style='padding:8px 0; border-top:1px solid #2A2D35;'>"
                 f"<div style='font-size:15px; font-weight:700; color:#fff;'>"
                 f"{team_chip(row['Home Team'])} <span style='color:#9CA3AF; "
-                f"font-weight:500;'>v</span> {team_chip(row['Away Team'])}</div>"
+                f"font-weight:500;'>v</span> {team_chip(row['Away Team'], dot_on_right=True)}</div>"
                 f"<div style='font-size:12px; color:#FFB81C; margin-top:2px;'>"
                 f"KO {html_lib.escape(row['Time'])} &middot; "
                 f"{html_lib.escape(row['Pitch'])}</div></div>"
