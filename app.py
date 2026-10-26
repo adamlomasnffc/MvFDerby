@@ -683,6 +683,84 @@ def fixtures_cards_html(df, next_week):
     return cards
 
 
+def to_24h_label(t):
+    """'8:00pm' -> '20:00'. Falls back to the original text if unparseable."""
+    cleaned = str(t).strip().upper().replace(" ", "")
+    for fmt in ("%I:%M%p", "%H:%M", "%H:%M:%S"):
+        try:
+            return datetime.strptime(cleaned, fmt).strftime("%H:%M")
+        except ValueError:
+            continue
+    return str(t).strip()
+
+
+PITCH_ORDER = ["Near Pitch", "Far Pitch", "First Free Pitch"]
+
+
+def fixture_split_html(df):
+    """One row per team: how many games in each KO slot and on each pitch,
+    counted across home and away fixtures."""
+    long_df = pd.concat([
+        df[["Time", "Pitch", "Home Team"]].rename(columns={"Home Team": "Team"}),
+        df[["Time", "Pitch", "Away Team"]].rename(columns={"Away Team": "Team"}),
+    ], ignore_index=True)
+    long_df["Slot"] = long_df["Time"].apply(to_24h_label)
+
+    slots = sorted(long_df["Slot"].unique())
+    present = long_df["Pitch"].unique().tolist()
+    pitches = [p for p in PITCH_ORDER if p in present] + sorted(
+        p for p in present if p not in PITCH_ORDER
+    )
+
+    by_slot = pd.crosstab(long_df["Team"], long_df["Slot"]).reindex(columns=slots, fill_value=0)
+    by_pitch = pd.crosstab(long_df["Team"], long_df["Pitch"]).reindex(columns=pitches, fill_value=0)
+
+    th = "padding:6px 4px; font-size:11px; border-bottom:1px solid #333;"
+    group_th = (
+        "padding:6px 4px; font-size:11px; font-weight:700; color:#111; "
+        "background:#FFB81C;"
+    )
+    divider = "border-left:1px solid #333;"
+
+    out = (
+        "<div class='mobile-table-container'>"
+        "<table style='width:100%; border-collapse:collapse; text-align:center; "
+        "font-family:sans-serif; min-width:330px;'>"
+        f"<tr><th style='{group_th}'></th>"
+        f"<th colspan='{len(slots)}' style='{group_th} {divider}'>KO TIME</th>"
+        f"<th colspan='{len(pitches)}' style='{group_th} {divider}'>PITCH</th></tr>"
+        f"<tr style='background:#22252e; color:#FFB81C;'>"
+        f"<th style='{th} text-align:left;'>Team</th>"
+    )
+    for i, sl in enumerate(slots):
+        out += f"<th style='{th}{divider if i == 0 else ''}'>{html_lib.escape(sl)}</th>"
+    for i, p in enumerate(pitches):
+        label = html_lib.escape(p.replace(" Pitch", ""))
+        out += f"<th style='{th}{divider if i == 0 else ''}'>{label}</th>"
+    out += "</tr>"
+
+    for idx, team in enumerate(sorted(by_slot.index)):
+        bg = "#181a20" if idx % 2 == 0 else "#0e1117"
+        out += (
+            f"<tr style='background:{bg}; color:#fff; font-size:12px;'>"
+            f"<td style='padding:6px 4px; text-align:left; font-weight:600; "
+            f"white-space:nowrap; border-bottom:1px solid #2A2D35;'>{team_chip(team)}</td>"
+        )
+        for i, sl in enumerate(slots):
+            out += (
+                f"<td style='padding:6px 4px; border-bottom:1px solid #2A2D35;"
+                f"{divider if i == 0 else ''}'>{int(by_slot.loc[team, sl])}</td>"
+            )
+        for i, p in enumerate(pitches):
+            out += (
+                f"<td style='padding:6px 4px; border-bottom:1px solid #2A2D35;"
+                f"{divider if i == 0 else ''}'>{int(by_pitch.loc[team, p])}</td>"
+            )
+        out += "</tr>"
+    out += "</table></div>"
+    return out
+
+
 # ==========================================
 # 11. TOP-LEVEL NAVIGATION
 # ==========================================
@@ -864,6 +942,9 @@ elif current_page == "Fixtures":
                 f"font-weight:600; font-size:14px; text-decoration:none;'>"
                 f"See this week's fixtures</a></div>"
             )
+
+        with st.expander("📊 Fixture balance: KO slots & pitches per team", expanded=True):
+            render_html(fixture_split_html(fixtures_df))
 
         render_html(fixtures_cards_html(fixtures_df, next_week))
 
