@@ -804,7 +804,7 @@ if current_page == "Homepage":
     st.markdown("### Welcome to the Derby Man v Fat League App")
     st.markdown(
         textwrap.dedent("""
-        Man v Fat Football is a weight-loss focused five-a-side league where
+        Man v Fat Football is a weight-loss focused six-a-side league where
         your score isn't just about goals - it's about progress on and off the pitch.
 
         This app tracks player stats across every season of the Derby league:
