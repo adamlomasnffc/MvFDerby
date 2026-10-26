@@ -574,10 +574,119 @@ def render_standings_table(subset, title):
 
 
 # ==========================================
+# 10b. FIXTURES
+# ==========================================
+import html as html_lib
+import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+FIXTURE_COLUMNS = ["Week", "Date", "Time", "Pitch", "Home Team", "Away Team"]
+
+# Teams are named after their colours, so we can show a matching dot
+TEAM_DOT_COLOURS = {
+    "white": "#FFFFFF", "black": "#000000", "yellow": "#FACC15",
+    "blue": "#3B82F6", "pink": "#EC4899", "red": "#EF4444",
+    "orange": "#F97316", "green": "#22C55E", "purple": "#A855F7",
+    "grey": "#9CA3AF", "gray": "#9CA3AF",
+}
+
+
+@st.cache_data(ttl=60)
+def load_fixtures():
+    """Expects a 'Fixtures' sheet with columns:
+    Week, Date, Time, Pitch, Home Team, Away Team"""
+    df = load_sheet("Fixtures").dropna(how="all")
+    missing = [c for c in FIXTURE_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"Fixtures sheet is missing columns: {', '.join(missing)}")
+    df = df[FIXTURE_COLUMNS].dropna(subset=["Week"]).copy()
+    for col in FIXTURE_COLUMNS:
+        df[col] = df[col].astype(str).str.strip()
+    df["ParsedDate"] = pd.to_datetime(df["Date"], errors="coerce")
+    return df
+
+
+def week_slug(week_name):
+    return re.sub(r"[^a-z0-9]+", "-", str(week_name).lower()).strip("-")
+
+
+def find_next_week(df):
+    """First week whose date is today or later (UK time). If the season is
+    over, falls back to the final week."""
+    today = datetime.now(ZoneInfo("Europe/London")).date()
+    weeks = df["Week"].drop_duplicates().tolist()
+    for w in weeks:
+        d = df.loc[df["Week"] == w, "ParsedDate"].dropna()
+        if not d.empty and d.iloc[0].date() >= today:
+            return w
+    return weeks[-1] if weeks else None
+
+
+def team_chip(name):
+    colour = TEAM_DOT_COLOURS.get(str(name).strip().lower())
+    dot = ""
+    if colour:
+        dot = (
+            f"<span style='display:inline-block; width:10px; height:10px; "
+            f"border-radius:50%; background-color:{colour}; "
+            f"border:1px solid rgba(255,255,255,0.5); margin-right:5px; "
+            f"vertical-align:middle;'></span>"
+        )
+    return f"{dot}{html_lib.escape(str(name))}"
+
+
+def fixtures_cards_html(df, next_week):
+    cards = ""
+    for week in df["Week"].drop_duplicates().tolist():
+        group = df[df["Week"] == week]
+        parsed = group["ParsedDate"].dropna()
+        date_label = (
+            parsed.iloc[0].strftime("%A %d %B %Y")
+            if not parsed.empty
+            else group["Date"].iloc[0]
+        )
+
+        is_next = week == next_week
+        border = "2px solid #FFB81C" if is_next else "1px solid #333"
+        glow = "box-shadow: 0 0 10px rgba(255,184,28,0.25);" if is_next else ""
+        badge = (
+            "<div style='display:inline-block; background:#FFB81C; color:#111; "
+            "font-size:10px; font-weight:700; padding:2px 8px; border-radius:10px; "
+            "margin-bottom:6px;'>NEXT UP</div>"
+            if is_next else ""
+        )
+
+        cards += (
+            f"<div id='{week_slug(week)}' style='background:#181a20; border:{border}; "
+            f"{glow} border-radius:12px; padding:14px 12px; margin:0 auto 16px auto; "
+            f"max-width:520px; scroll-margin-top:20px;'>"
+            f"{badge}"
+            f"<div style='font-size:18px; font-weight:800; color:#FFB81C;'>"
+            f"{html_lib.escape(str(week))}</div>"
+            f"<div style='font-size:13px; color:#d1d5db; margin-bottom:8px;'>"
+            f"{html_lib.escape(str(date_label))}</div>"
+        )
+        for _, row in group.iterrows():
+            cards += (
+                f"<div style='padding:8px 0; border-top:1px solid #2A2D35;'>"
+                f"<div style='font-size:15px; font-weight:700; color:#fff;'>"
+                f"{team_chip(row['Home Team'])} <span style='color:#9CA3AF; "
+                f"font-weight:500;'>v</span> {team_chip(row['Away Team'])}</div>"
+                f"<div style='font-size:12px; color:#FFB81C; margin-top:2px;'>"
+                f"KO {html_lib.escape(row['Time'])} &middot; "
+                f"{html_lib.escape(row['Pitch'])}</div></div>"
+            )
+        cards += "</div>"
+    return cards
+
+
+# ==========================================
 # 11. TOP-LEVEL NAVIGATION
 # ==========================================
 pages_config = [
     ("🏠 Home", "Homepage"),
+    ("📅 Fixtures", "Fixtures"),
     ("📊 Season Stats", "Season Stats"),
     ("🏆 All Time Stats", "All Time Stats"),
     ("🔄 Draft Standings", "Draft Standings"),
@@ -592,13 +701,14 @@ def nav_button(label, key, column):
         st.rerun()
 
 
-# Row 1: Home, centred on its own
-_, home_col, _ = st.columns(3)
-nav_button(pages_config[0][0], pages_config[0][1], home_col)
+# Row 1: Home + Fixtures, centred over the row below
+_, top_col_1, top_col_2, _ = st.columns(4)
+nav_button(pages_config[0][0], pages_config[0][1], top_col_1)
+nav_button(pages_config[1][0], pages_config[1][1], top_col_2)
 
-# Row 2: the three destination tabs
-other_cols = st.columns(len(pages_config) - 1)
-for idx, (label, key) in enumerate(pages_config[1:]):
+# Row 2: the three stats tabs
+other_cols = st.columns(len(pages_config) - 2)
+for idx, (label, key) in enumerate(pages_config[2:]):
     nav_button(label, key, other_cols[idx])
 
 st.divider()
@@ -611,7 +721,7 @@ if current_page == "Homepage":
     st.markdown("### Welcome to the Derby Man v Fat League App")
     st.markdown(
         textwrap.dedent("""
-        Man v Fat Football is a weight-loss focused six-a-side league where
+        Man v Fat Football is a weight-loss focused five-a-side league where
         your score isn't just about goals - it's about progress on and off the pitch.
 
         This app tracks player stats across every season of the Derby league:
@@ -619,7 +729,7 @@ if current_page == "Homepage":
         for the current season and across our full league history.
 
         Every three seasons, squads are redrafted. Use **Draft Standings** to see
-        how each side performs across a full draft cycle before the next reshuffle.
+        how each side performed across a full draft cycle before the next reshuffle.
 
         Use the buttons above to explore:
         - **Season Stats** - this season's leaderboard, plus every past season
@@ -732,3 +842,28 @@ elif current_page == "Draft Standings":
 
     except Exception as e:
         st.error(f"Error loading Draft Standings: {e}")
+
+# ==========================================
+# 16. FIXTURES
+# ==========================================
+elif current_page == "Fixtures":
+    st.markdown("## Fixtures")
+
+    try:
+        fixtures_df = load_fixtures()
+        next_week = find_next_week(fixtures_df)
+
+        if next_week:
+            render_html(
+                f"<div style='text-align:center; margin:6px 0 18px 0;'>"
+                f"<a href='#{week_slug(next_week)}' target='_self' "
+                f"style='display:inline-block; padding:10px 18px; border-radius:8px; "
+                f"background:#22252e; color:#FFB81C; border:1px solid #FFB81C; "
+                f"font-weight:600; font-size:14px; text-decoration:none;'>"
+                f"See this week's fixtures</a></div>"
+            )
+
+        render_html(fixtures_cards_html(fixtures_df, next_week))
+
+    except Exception as e:
+        st.error(f"Error loading Fixtures: {e}")
