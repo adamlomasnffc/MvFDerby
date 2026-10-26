@@ -695,6 +695,7 @@ def to_24h_label(t):
 
 
 PITCH_ORDER = ["Near Pitch", "Far Pitch", "First Free Pitch"]
+PITCH_SHORT_LABELS = {"First Free Pitch": "Either"}
 
 
 def fixture_split_html(df):
@@ -730,12 +731,12 @@ def fixture_split_html(df):
         f"<th colspan='{len(slots)}' style='{group_th} {divider}'>KO TIME</th>"
         f"<th colspan='{len(pitches)}' style='{group_th} {divider}'>PITCH</th></tr>"
         f"<tr style='background:#22252e; color:#FFB81C;'>"
-        f"<th style='{th} text-align:left;'>Team</th>"
+        f"<th style='{th}'>Team</th>"
     )
     for i, sl in enumerate(slots):
         out += f"<th style='{th}{divider if i == 0 else ''}'>{html_lib.escape(sl)}</th>"
     for i, p in enumerate(pitches):
-        label = html_lib.escape(p.replace(" Pitch", ""))
+        label = html_lib.escape(PITCH_SHORT_LABELS.get(p, p.replace(" Pitch", "")))
         out += f"<th style='{th}{divider if i == 0 else ''}'>{label}</th>"
     out += "</tr>"
 
@@ -743,8 +744,10 @@ def fixture_split_html(df):
         bg = "#181a20" if idx % 2 == 0 else "#0e1117"
         out += (
             f"<tr style='background:{bg}; color:#fff; font-size:12px;'>"
-            f"<td style='padding:6px 4px; text-align:left; font-weight:600; "
-            f"white-space:nowrap; border-bottom:1px solid #2A2D35;'>{team_chip(team)}</td>"
+            f"<td style='padding:6px 4px; text-align:center; font-weight:600; "
+            f"white-space:nowrap; border-bottom:1px solid #2A2D35;'>"
+            f"<div style='display:flex; justify-content:center; align-items:center; "
+            f"text-align:center;'><span>{team_chip(team)}</span></div></td>"
         )
         for i, sl in enumerate(slots):
             out += (
