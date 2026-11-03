@@ -59,6 +59,9 @@ if "season_stats_selected" not in st.session_state:
 if "draft_period" not in st.session_state:
     st.session_state["draft_period"] = "Overview"
 
+if "draft_version" not in st.session_state:
+    st.session_state["draft_version"] = "Draft 2"
+
 current_page = st.session_state["active_page"]
 
 # ==========================================
@@ -524,7 +527,7 @@ def parse_draft_league(raw_df, period_key, league_key):
     return result
 
 
-def render_standings_table(subset, title):
+def render_standings_table(subset, title, use_chips=False):
     subset = subset.sort_values(by=["Points", "Goal Difference"], ascending=False).reset_index(drop=True)
 
     st.markdown(f"#### {title}")
@@ -553,6 +556,9 @@ def render_standings_table(subset, title):
                 formatted_val = str(int(val)) if float(val) % 1 == 0 else str(val)
             else:
                 formatted_val = str(val)
+
+            if use_chips and col == "Team":
+                formatted_val = team_chip(val)
 
             weight = "font-weight: 700;" if col == "Team" else ""
             gd_colour = ""
@@ -765,11 +771,202 @@ def fixture_split_html(df):
 
 
 # ==========================================
+# 10c. RESULTS + DRAFT 2 STANDINGS
+# ==========================================
+# The 'Results' sheet is a merged-cell scorecard layout: one 7-row block per
+# game. Columns (0-indexed): 0 Week, 1 Game, 2 Home team / row labels,
+# 3 home score, 4 "v", 5 away score, 6 Away team / row labels.
+# Pitch score isn't entered - it's worked out as Combined - Scale - Tracking.
+
+# Week numbers restart at Wk 1 each season, so a new season is detected
+# whenever the week number drops (e.g. Wk 18 followed by Wk 1). Seasons are
+# numbered 1, 2, 3... in the order they appear down the sheet.
+
+RESULT_CATEGORIES = ["Combined", "Scales", "Pitch"]
+
+
+@st.cache_data(ttl=60)
+def load_results_raw():
+    url = (
+        f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
+        f"/gviz/tq?tqx=out:csv&sheet=Results"
+    )
+    return pd.read_csv(url, header=None, dtype=str)
+
+
+def clean_team_name(raw):
+    name = re.sub(r"\s+team\s*$", "", str(raw).strip(), flags=re.IGNORECASE)
+    return name.strip().title()
+
+
+def to_int_or_none(val):
+    try:
+        return int(float(str(val).strip()))
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_results(raw):
+    """Turn the merged-cell scorecard sheet into one dict per game."""
+    n_rows, n_cols = raw.shape
+
+    def cell(r, c):
+        if r >= n_rows or c >= n_cols:
+            return ""
+        v = raw.iat[r, c]
+        return "" if pd.isnull(v) else str(v).strip()
+
+    games = []
+    current = None
+    current_week = None
+    current_season = 1
+    prev_week = None
+
+    for r in range(n_rows):
+        week_text = cell(r, 0)
+        week_match = re.search(r"(\d+)", week_text)
+        if week_text and week_match:
+            new_week = int(week_match.group(1))
+            if prev_week is not None and new_week < prev_week:
+                current_season += 1
+            current_week = new_week
+            prev_week = new_week
+
+        game_text = cell(r, 1)
+        game_match = re.match(r"\s*Game\s+(\d+)", game_text, re.IGNORECASE)
+
+        if game_match:
+            lines = [ln.strip() for ln in game_text.splitlines() if ln.strip()]
+            comp = lines[1] if len(lines) > 1 else "League"
+            date_match = re.search(
+                r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})",
+                game_text, re.IGNORECASE,
+            )
+            time_match = re.search(r"(\d{1,2}:\d{2})", game_text)
+            current = {
+                "season": current_season,
+                "week": current_week,
+                "game_no": int(game_match.group(1)),
+                "competition": comp,
+                "is_league": comp.strip().lower() == "league",
+                "date_raw": f"{date_match.group(1).title()} {date_match.group(2)}" if date_match else "",
+                "time": time_match.group(1) if time_match else "",
+                "home": clean_team_name(cell(r, 2)),
+                "away": clean_team_name(cell(r, 6)),
+                "total": (to_int_or_none(cell(r, 3)), to_int_or_none(cell(r, 5))),
+                "scale": (None, None),
+                "tracking": (None, None),
+            }
+            games.append(current)
+        elif current is not None:
+            label = cell(r, 2).lower()
+            if label.startswith("scale"):
+                current["scale"] = (to_int_or_none(cell(r, 3)), to_int_or_none(cell(r, 5)))
+            elif label.startswith("tracking"):
+                current["tracking"] = (to_int_or_none(cell(r, 3)), to_int_or_none(cell(r, 5)))
+
+    for g in games:
+        h_total, a_total = g["total"]
+        g["played"] = h_total is not None and a_total is not None
+        if g["played"]:
+            s_h, s_a = (v or 0 for v in g["scale"])
+            t_h, t_a = (v or 0 for v in g["tracking"])
+            g["scores"] = {
+                "Combined": (h_total, a_total),
+                "Scales": (s_h, s_a),
+                "Tracking": (t_h, t_a),
+                "Pitch": (h_total - s_h - t_h, a_total - s_a - t_a),
+            }
+        else:
+            g["scores"] = {}
+    return games
+
+
+def results_cards_html(games, week_dates, season):
+    by_week = {}
+    for g in games:
+        if g["played"] and g["week"] is not None and g["season"] == season:
+            by_week.setdefault(g["week"], []).append(g)
+
+    cards = ""
+    for wk in sorted(by_week, reverse=True):  # latest week first
+        wk_games = sorted(by_week[wk], key=lambda g: g["game_no"])
+        ts = week_dates.get(wk)
+        date_label = ts.strftime("%A %d %B %Y") if ts is not None else wk_games[0]["date_raw"]
+
+        cards += (
+            f"<div style='background:#181a20; border:1px solid #333; border-radius:12px; "
+            f"padding:14px 12px; margin:0 auto 16px auto; max-width:520px;'>"
+            f"<div style='font-size:18px; font-weight:800; color:#FFB81C;'>Week {wk}</div>"
+            f"<div style='font-size:13px; color:#d1d5db; margin-bottom:8px;'>"
+            f"{html_lib.escape(str(date_label))}</div>"
+        )
+        for g in wk_games:
+            sc = g["scores"]
+            meta = f"Game {g['game_no']}"
+            if g["time"]:
+                meta += f" &middot; {html_lib.escape(g['time'])} KO"
+            if not g["is_league"]:
+                meta += f" &middot; {html_lib.escape(g['competition'])}"
+            cards += (
+                f"<div style='padding:10px 0; border-top:1px solid #2A2D35;'>"
+                f"<div style='font-size:11px; color:#9CA3AF; margin-bottom:3px;'>{meta}</div>"
+                f"<div style='font-size:15px; font-weight:700; color:#fff;'>"
+                f"{team_chip(g['home'])} "
+                f"<span style='color:#FFB81C; margin:0 6px;'>{sc['Combined'][0]} &ndash; {sc['Combined'][1]}</span> "
+                f"{team_chip(g['away'], dot_on_right=True)}</div>"
+                f"<div style='font-size:12px; color:#d1d5db; margin-top:4px;'>"
+                f"Scales {sc['Scales'][0]}&ndash;{sc['Scales'][1]} &middot; "
+                f"Tracking {sc['Tracking'][0]}&ndash;{sc['Tracking'][1]} &middot; "
+                f"Pitch {sc['Pitch'][0]}&ndash;{sc['Pitch'][1]}</div></div>"
+            )
+        cards += "</div>"
+    return cards
+
+
+def compute_draft2_table(games, category, period_key):
+    """League table (2 pts win, 1 draw) for one category and period."""
+    season_n = None if period_key == "Overview" else int(period_key.split()[-1])
+
+    stats = {}
+    for g in games:
+        if not g["played"] or not g["is_league"] or g["week"] is None:
+            continue
+        if season_n is not None and g["season"] != season_n:
+            continue
+        h, a = g["scores"][category]
+        for team, gf, ga in ((g["home"], h, a), (g["away"], a, h)):
+            row = stats.setdefault(team, {"Played": 0, "Won": 0, "Drawn": 0, "Lost": 0,
+                                          "Goals For": 0, "Goals Against": 0})
+            row["Played"] += 1
+            row["Goals For"] += gf
+            row["Goals Against"] += ga
+            if gf > ga:
+                row["Won"] += 1
+            elif gf == ga:
+                row["Drawn"] += 1
+            else:
+                row["Lost"] += 1
+
+    records = []
+    for team, r in stats.items():
+        records.append({
+            "Team": team, **r,
+            "Goal Difference": r["Goals For"] - r["Goals Against"],
+            "Points": r["Won"] * 2 + r["Drawn"],
+        })
+    cols = ["Team", "Played", "Won", "Drawn", "Lost",
+            "Goals For", "Goals Against", "Goal Difference", "Points"]
+    return pd.DataFrame(records, columns=cols)
+
+
+# ==========================================
 # 11. TOP-LEVEL NAVIGATION
 # ==========================================
 pages_config = [
     ("🏠 Home", "Homepage"),
     ("📅 Fixtures", "Fixtures"),
+    ("📋 Results", "Results"),
     ("📊 Season Stats", "Season Stats"),
     ("🏆 All Time Stats", "All Time Stats"),
     ("🔄 Draft Standings", "Draft Standings"),
@@ -784,14 +981,14 @@ def nav_button(label, key, column):
         st.rerun()
 
 
-# Row 1: Home + Fixtures, centred over the row below
-_, top_col_1, top_col_2, _ = st.columns(4)
-nav_button(pages_config[0][0], pages_config[0][1], top_col_1)
-nav_button(pages_config[1][0], pages_config[1][1], top_col_2)
+# Row 1: Home, Fixtures, Results
+top_cols = st.columns(3)
+for idx, (label, key) in enumerate(pages_config[:3]):
+    nav_button(label, key, top_cols[idx])
 
 # Row 2: the three stats tabs
-other_cols = st.columns(len(pages_config) - 2)
-for idx, (label, key) in enumerate(pages_config[2:]):
+other_cols = st.columns(3)
+for idx, (label, key) in enumerate(pages_config[3:]):
     nav_button(label, key, other_cols[idx])
 
 st.divider()
@@ -922,36 +1119,68 @@ elif current_page == "All Time Stats":
 elif current_page == "Draft Standings":
     st.markdown("## Draft Standings")
 
+    # Draft selector (Draft 1 is the archive, Draft 2 is the current draft)
+    draft_versions = ["Draft 1", "Draft 2"]
+    version_cols = st.columns(len(draft_versions))
+    for idx, v in enumerate(draft_versions):
+        if version_cols[idx].button(
+            v,
+            key=f"draft_version_{v}",
+            use_container_width=True,
+            type="primary" if st.session_state["draft_version"] == v else "secondary",
+        ):
+            st.session_state["draft_version"] = v
+            st.rerun()
+
+    selected_version = st.session_state["draft_version"]
+    if selected_version == "Draft 1":
+        st.caption("Archive: the previous draft's final standings.")
+
+    periods = ["Overview", "Season 1", "Season 2", "Season 3"]
+    period_cols = st.columns(len(periods))
+    for idx, p in enumerate(periods):
+        is_active = st.session_state["draft_period"] == p
+        if period_cols[idx].button(
+            p,
+            key=f"draft_period_{selected_version}_{p}",
+            use_container_width=True,
+            type="primary" if is_active else "secondary",
+        ):
+            st.session_state["draft_period"] = p
+            st.rerun()
+
+    st.divider()
+    selected_period = st.session_state["draft_period"]
+
     try:
-        raw_df = load_draft_standings_raw()
+        if selected_version == "Draft 1":
+            raw_df = load_draft_standings_raw()
 
-        periods = ["Overview", "Season 1", "Season 2", "Season 3"]
+            overall_df = parse_draft_league(raw_df, selected_period, "Overall")
+            pitch_df = parse_draft_league(raw_df, selected_period, "Pitch")
+            scales_df = parse_draft_league(raw_df, selected_period, "Scales")
 
-        period_cols = st.columns(len(periods))
-        for idx, p in enumerate(periods):
-            is_active = st.session_state["draft_period"] == p
-            if period_cols[idx].button(
-                p,
-                key=f"draft_period_{p}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary",
-            ):
-                st.session_state["draft_period"] = p
-                st.rerun()
+            render_standings_table(overall_df, "🔥 Combined")
+            st.markdown("<br>", unsafe_allow_html=True)
+            render_standings_table(scales_df, "⚖️ Scales")
+            st.markdown("<br>", unsafe_allow_html=True)
+            render_standings_table(pitch_df, "⚽ Pitch")
 
-        st.divider()
+        else:
+            games = parse_results(load_results_raw())
+            overall_df = compute_draft2_table(games, "Combined", selected_period)
 
-        selected_period = st.session_state["draft_period"]
+            if overall_df.empty:
+                st.info("No results for this period yet.")
+            else:
+                scales_df = compute_draft2_table(games, "Scales", selected_period)
+                pitch_df = compute_draft2_table(games, "Pitch", selected_period)
 
-        overall_df = parse_draft_league(raw_df, selected_period, "Overall")
-        pitch_df = parse_draft_league(raw_df, selected_period, "Pitch")
-        scales_df = parse_draft_league(raw_df, selected_period, "Scales")
-
-        render_standings_table(overall_df, "🔥 Combined")
-        st.markdown("<br>", unsafe_allow_html=True)
-        render_standings_table(scales_df, "⚖️ Scales")
-        st.markdown("<br>", unsafe_allow_html=True)
-        render_standings_table(pitch_df, "⚽ Pitch")
+                render_standings_table(overall_df, "🔥 Combined", use_chips=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+                render_standings_table(scales_df, "⚖️ Scales", use_chips=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+                render_standings_table(pitch_df, "⚽ Pitch", use_chips=True)
 
     except Exception as e:
         st.error(f"Error loading Draft Standings: {e}")
@@ -983,3 +1212,42 @@ elif current_page == "Fixtures":
 
     except Exception as e:
         st.error(f"Error loading Fixtures: {e}")
+
+# ==========================================
+# 17. RESULTS
+# ==========================================
+elif current_page == "Results":
+    st.markdown("## Results")
+
+    try:
+        games = parse_results(load_results_raw())
+
+        # Use the Fixtures tab to show full dates (the Results sheet has no year)
+        week_dates = {}
+        try:
+            fx = load_fixtures()
+            for wk_name in fx["Week"].drop_duplicates():
+                num = re.search(r"(\d+)", wk_name)
+                d = fx.loc[fx["Week"] == wk_name, "ParsedDate"].dropna()
+                if num and not d.empty:
+                    week_dates[int(num.group(1))] = d.iloc[0]
+        except Exception:
+            pass
+
+        seasons = sorted({g["season"] for g in games if g["played"]})
+        if not seasons:
+            st.info("No results have been entered yet.")
+        else:
+            latest = seasons[-1]
+            chosen = latest
+            if len(seasons) > 1:
+                chosen = st.selectbox(
+                    "Season", options=seasons, index=len(seasons) - 1,
+                    format_func=lambda n: f"Season {n}",
+                )
+            # Fixtures dates only exist for the current (latest) season
+            dates = week_dates if chosen == latest else {}
+            render_html(results_cards_html(games, dates, chosen))
+
+    except Exception as e:
+        st.error(f"Error loading Results: {e}")
