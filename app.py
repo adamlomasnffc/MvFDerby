@@ -1,4 +1,6 @@
 import base64
+import html as html_lib
+import re
 import textwrap
 from pathlib import Path
 
@@ -251,14 +253,40 @@ def normalize_name(val):
 # ==========================================
 # 7. TEAM COLOUR LOOKUP
 # ==========================================
+def team_to_hex(team_text):
+    """'Black Team' / 'Blacks' / 'black' -> a hex colour (or '' if unknown)."""
+    t = re.sub(r"\bteams?\b", "", str(team_text).lower())
+    t = re.sub(r"[^a-z]", "", t)
+    if not t or t == "nan":
+        return ""
+    if t in TEAM_DOT_COLOURS:
+        return TEAM_DOT_COLOURS[t]
+    if t.endswith("s") and t[:-1] in TEAM_DOT_COLOURS:
+        return TEAM_DOT_COLOURS[t[:-1]]
+    for name, hex_val in TEAM_DOT_COLOURS.items():
+        if name in t:
+            return hex_val
+    return ""
+
+
+def readable_text_colour(hex_val):
+    """Dark text on light fills, white text on dark fills."""
+    h = hex_val.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return "#111111" if (0.299 * r + 0.587 * g + 0.114 * b) > 135 else "#ffffff"
+
+
 @st.cache_data(ttl=60)
 def load_colour_map():
-    """Expects a 'Team_Colours' sheet with columns: Player, Team, Colour"""
+    """Player -> team colour, taken from the Player Dashboard's Team column."""
     try:
-        df = load_sheet("Team_Colours")
-        df["Player"] = df["Player"].apply(normalize_name)
-        df["Colour"] = df["Colour"].apply(normalize_name)
-        return dict(zip(df["Player"], df["Colour"]))
+        df = load_player_dashboard()
+        out = {}
+        for player, team in zip(df["Player"], df["Team"]):
+            hex_val = team_to_hex(team)
+            if hex_val:
+                out[player] = hex_val
+        return out
     except Exception:
         return {}
 
@@ -297,46 +325,84 @@ def load_historical_data():
     return df[STATS_COLUMNS]
 
 
-@st.cache_data(ttl=60)
-def load_current_season_data(season_label):
-    """Expects a 'Current_Season' sheet laid out as four pivot pairs, WITH a
-    blank spacer column between each pair (matches the real sheet layout):
-    Player, Goals Scored, [blank], Player, Assists, [blank],
-    Player, Goal Contributions, [blank], Player, MOTM"""
-    raw = load_sheet("Current_Season")
-    cols = raw.columns.tolist()
+def parse_player_dashboard(raw):
+    """Finds the Player Dashboard columns by header NAME, so column order
+    doesn't matter. Expected headers: Player, MOTM, Total Goals,
+    Total Assists, Total Goal Contributions, Team (extra columns are ignored)."""
+    header_idx = None
+    for i in range(min(len(raw), 15)):
+        cells = [str(c).strip().lower() for c in raw.iloc[i] if pd.notnull(c)]
+        if "player" in cells and any(c in cells for c in ("motm", "team", "total goals")):
+            header_idx = i
+            break
+    if header_idx is None:
+        raise ValueError("Couldn't find a header row containing 'Player' in the Player Dashboard sheet")
 
-    if len(cols) < 11:
-        return pd.DataFrame(columns=STATS_COLUMNS)
+    headers = [str(c).strip() if pd.notnull(c) else "" for c in raw.iloc[header_idx]]
+    lower = [h.lower() for h in headers]
 
-    def pair_to_dict(player_col, value_col):
-        out = {}
-        for p, v in zip(raw[player_col], raw[value_col]):
-            p = normalize_name(p)
-            if p and p.lower() not in ["nan", "none", "", "-"]:
-                out[p] = v if pd.notnull(v) else 0
-        return out
+    def find(exact, fallback=None):
+        for name in exact:
+            if name in lower:
+                return lower.index(name)
+        if fallback:
+            for i, h in enumerate(lower):
+                if fallback(h):
+                    return i
+        return None
 
-    # Positions: (0,1)=Goals, (3,4)=Assists, (6,7)=Goal Contributions, (9,10)=MOTM
-    goals_dict = pair_to_dict(cols[0], cols[1])
-    assists_dict = pair_to_dict(cols[3], cols[4])
-    gi_dict = pair_to_dict(cols[6], cols[7])
-    motm_dict = pair_to_dict(cols[9], cols[10])
+    idx = {
+        "Player": find(["player"]),
+        "Goals": find(["total goals", "goals"],
+                      lambda h: "goal" in h and not any(k in h for k in ("assist", "contribution", "involvement"))),
+        "Assists": find(["total assists", "assists"], lambda h: "assist" in h),
+        "Goal Involvements": find(["total goal contributions", "total goal involvements"],
+                                  lambda h: "contribution" in h or "involvement" in h),
+        "Man Of The Match": find(["motm", "man of the match"], lambda h: "motm" in h or "man of the match" in h),
+        "Team": find(["team"]),
+    }
+    missing = [k for k, v in idx.items() if v is None and k != "Team"]
+    if missing:
+        raise ValueError(f"Player Dashboard is missing columns for: {', '.join(missing)}. Found headers: {headers}")
 
-    all_players = set(goals_dict) | set(assists_dict) | set(gi_dict) | set(motm_dict)
+    def number(v):
+        n = pd.to_numeric(v, errors="coerce")
+        return 0 if pd.isnull(n) else int(n)
 
     rows = []
-    for p in all_players:
+    for r in range(header_idx + 1, len(raw)):
+        name = normalize_name(raw.iat[r, idx["Player"]])
+        if not name or name.lower() in ["nan", "none", "-", "total", "grand total"]:
+            continue
         rows.append({
-            "Season": season_label,
-            "Player": p,
-            "Goals": goals_dict.get(p, 0),
-            "Assists": assists_dict.get(p, 0),
-            "Goal Involvements": gi_dict.get(p, 0),
-            "Man Of The Match": motm_dict.get(p, 0),
+            "Player": name,
+            "Goals": number(raw.iat[r, idx["Goals"]]),
+            "Assists": number(raw.iat[r, idx["Assists"]]),
+            "Goal Involvements": number(raw.iat[r, idx["Goal Involvements"]]),
+            "Man Of The Match": number(raw.iat[r, idx["Man Of The Match"]]),
+            "Team": normalize_name(raw.iat[r, idx["Team"]]) if idx["Team"] is not None else "",
         })
+    return pd.DataFrame(
+        rows, columns=["Player", "Goals", "Assists", "Goal Involvements", "Man Of The Match", "Team"]
+    )
 
-    return pd.DataFrame(rows, columns=STATS_COLUMNS)
+
+@st.cache_data(ttl=60)
+def load_player_dashboard():
+    from urllib.parse import quote
+    url = (
+        f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
+        f"/gviz/tq?tqx=out:csv&sheet={quote('Player Dashboard')}"
+    )
+    raw = pd.read_csv(url, header=None, dtype=str)
+    return parse_player_dashboard(raw)
+
+
+@st.cache_data(ttl=60)
+def load_current_season_data(season_label):
+    df = load_player_dashboard().copy()
+    df["Season"] = season_label
+    return df[STATS_COLUMNS]
 
 
 CURRENT_SEASON_LABEL = "8"  # TODO: update this manually each new season (matches Historical_Data's numeric Season column)
@@ -395,8 +461,14 @@ def render_stats_table(df, colour_map, key_prefix):
         for col in display_cols:
             val = row[col]
             if col == "Player":
-                cell_content = player_cell_html(val, colour_map)
+                cell_content = html_lib.escape(str(val))
                 td_style = "padding: 6px; border-bottom: 1px solid #2A2D35; white-space: nowrap; font-weight: 500;"
+                fill = colour_map.get(val, "")
+                if fill:
+                    td_style += (
+                        f" background-color: {fill}; color: {readable_text_colour(fill)};"
+                        f" font-weight: 600; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18);"
+                    )
             else:
                 cell_content = "-" if pd.isnull(val) else str(int(val))
                 td_style = "padding: 6px; border-bottom: 1px solid #2A2D35;"
