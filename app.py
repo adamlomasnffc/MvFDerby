@@ -458,21 +458,22 @@ def render_stats_table(df, colour_map, key_prefix):
     for idx, row in filtered_df.iterrows():
         bg_color = "#181a20" if idx % 2 == 0 else "#0e1117"
         table_html += f"<tr style='background-color: {bg_color}; color: white; font-size: 12px;'>"
+        row_fill = colour_map.get(row["Player"], "")
+        fill_style = ""
+        if row_fill:
+            fill_style = (
+                f" background-color: {row_fill}; color: {readable_text_colour(row_fill)};"
+                f" font-weight: 600; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18);"
+            )
         for col in display_cols:
             val = row[col]
             if col == "Player":
                 cell_content = html_lib.escape(str(val))
                 td_style = "padding: 6px; border-bottom: 1px solid #2A2D35; white-space: nowrap; font-weight: 500;"
-                fill = colour_map.get(val, "")
-                if fill:
-                    td_style += (
-                        f" background-color: {fill}; color: {readable_text_colour(fill)};"
-                        f" font-weight: 600; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18);"
-                    )
             else:
                 cell_content = "-" if pd.isnull(val) else str(int(val))
                 td_style = "padding: 6px; border-bottom: 1px solid #2A2D35;"
-            table_html += f"<td style='{td_style}'>{cell_content}</td>"
+            table_html += f"<td style='{td_style}{fill_style}'>{cell_content}</td>"
         table_html += "</tr>"
     table_html += "</table></div>"
 
