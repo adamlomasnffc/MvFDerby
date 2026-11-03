@@ -1152,10 +1152,12 @@ elif current_page == "Season Stats":
 
             season_df = combined_df[combined_df["Season"] == selected_season].reset_index(drop=True)
 
-            # Current season only: hide players with no goal involvements yet
+            # Current season only: hide players with no goal involvements AND no MOTM yet
             table_df = season_df
             if str(selected_season) == str(CURRENT_SEASON_LABEL):
-                table_df = season_df[season_df["Goal Involvements"] > 0].reset_index(drop=True)
+                table_df = season_df[
+                    (season_df["Goal Involvements"] > 0) | (season_df["Man Of The Match"] > 0)
+                ].reset_index(drop=True)
 
             render_stats_kpis(season_df)
             st.divider()
