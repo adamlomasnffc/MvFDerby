@@ -30,8 +30,16 @@ LOGO_PATH = Path(__file__).parent / LOGO_FILENAME
 
 @st.cache_data
 def load_logo_data_uri():
+    """Shrinks the logo to a small JPEG before embedding it, so the page
+    stays light on phones (the header only shows it ~65px tall)."""
     try:
-        encoded = base64.b64encode(LOGO_PATH.read_bytes()).decode()
+        import io
+        from PIL import Image
+        img = Image.open(LOGO_PATH).convert("RGB")
+        img.thumbnail((260, 260))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85, optimize=True)
+        encoded = base64.b64encode(buf.getvalue()).decode()
         return f"data:image/jpeg;base64,{encoded}"
     except Exception:
         return ""
@@ -42,6 +50,7 @@ HEADER_LOGO_URL = load_logo_data_uri()
 try:
     from PIL import Image
     PAGE_ICON = Image.open(LOGO_PATH)
+    PAGE_ICON.thumbnail((128, 128))
 except Exception:
     PAGE_ICON = "⚽"
 
