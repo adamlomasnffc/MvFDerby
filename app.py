@@ -405,7 +405,7 @@ def load_current_season_data(season_label):
     return df[STATS_COLUMNS]
 
 
-CURRENT_SEASON_LABEL = "8"  # TODO: update this manually each new season (matches Historical_Data's numeric Season column)
+CURRENT_SEASON_LABEL = "9"  # TODO: update this manually each new season (matches Historical_Data's numeric Season column)
 
 
 @st.cache_data(ttl=60)
@@ -1152,10 +1152,15 @@ elif current_page == "Season Stats":
 
             season_df = combined_df[combined_df["Season"] == selected_season].reset_index(drop=True)
 
+            # Current season only: hide players with no goal involvements yet
+            table_df = season_df
+            if str(selected_season) == str(CURRENT_SEASON_LABEL):
+                table_df = season_df[season_df["Goal Involvements"] > 0].reset_index(drop=True)
+
             render_stats_kpis(season_df)
             st.divider()
             st.markdown(f"### Season {selected_season} Player Stats")
-            render_stats_table(season_df, colour_map, key_prefix="season")
+            render_stats_table(table_df, colour_map, key_prefix="season")
 
     except Exception as e:
         st.error(f"Error loading Season Stats: {e}")
